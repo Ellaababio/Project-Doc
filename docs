@@ -1,0 +1,596 @@
+# DART Data Assimilation — Experiment Documentation
+## Overview
+
+This documentation covers data assimilation experiments conducted using
+**DART (Data Assimilation Research Testbed)** — an open-source ensemble
+DA framework developed by NCAR/UCAR.
+
+Three models were studied in order of increasing complexity:
+
+| Model | Variables | Dimensions | Purpose |
+|-------|-----------|------------|---------|
+| [Lorenz 63](lorenz63.md) | 3 (x, y, z) | 0D — 3 equations | Learn DA basics |
+| [Lorenz 96](lorenz96.md) | 40 (x1–x40) | 1D — latitude circle | Test inflation and localization |
+| [B-grid Solo](bgrid.md) | 28,200 (Ps, T, u, v) | 3D — global atmosphere | Real atmospheric DA |
+
+---
+
+## What is Data Assimilation?
+
+Data assimilation (DA) mathematically combines two imperfect sources of
+information to produce the best possible estimate of the true atmospheric state:
+
+1. **A computer model** — simulates the atmosphere but drifts from reality
+2. **Observations** — real measurements but sparse and noisy
+
+DART uses the **Ensemble Kalman Filter (EnKF)** — running many slightly
+different model forecasts (an ensemble) and using their spread to estimate
+uncertainty, then correcting them toward observations.
+
+---
+
+## System Setup
+
+All experiments were run on the **FSU Research Computing Center (RCC) HPC**
+via the OnDemand web interface.
+
+### Loading Required Modules
+
+```bash
+module purge
+module load intel/21
+module load openmpi/4.1.6
+which mpif90   # verify — should return a path
+```
+
+Add to `~/.bashrc` to load automatically:
+
+```bash
+module load intel/21
+module load openmpi/4.1.6
+```
+
+### DART Installation Path
+
+```
+/gpfs/home/ea25e/space/DART/
+```
+
+---
+
+## Key Concepts
+
+### Ensemble Size vs Model Size
+
+| Term | Parameter | Meaning |
+|------|-----------|---------|
+| `model_size` | `&model_nml` | Number of variables in ONE model run |
+| `ens_size` | `&filter_nml` | Number of parallel model runs |
+
+### RMSE
+
+Root Mean Square Error — measures how far the ensemble mean is from truth.
+Lower = better. Computed separately for prior (before DA) and posterior (after DA).
+
+### Spread/RMSE Ratio
+
+- **Target: 1.0** — ensemble spread matches RMSE (well calibrated)
+- **< 0.8** — underdispersive (ensemble too confident)
+- **> 1.2** — overdispersive (ensemble too uncertain)
+
+### Inflation
+
+Artificially increases ensemble spread to prevent collapse over time.
+Controlled by `inf_flavor` (method) and `inf_initial` (starting strength).
+
+### Localization
+
+Limits how far each observation's influence reaches spatially.
+Controlled by `cutoff` in `&assim_tools_nml`.
+
+---
+
+## Navigation
+
+- [Lorenz 63 Experiment](lorenz63.md)
+- [Lorenz 96 Experiment](lorenz96.md)
+- [B-grid Solo Experiment](bgrid.md)# Lorenz 96 Model
+
+**Model directory:** `DART/models/lorenz_96/work/`  
+**Date:** May 2026  
+
+---
+
+## What is Lorenz 96?
+
+The Lorenz 96 model consists of **40 variables** arranged around a
+latitude circle, each representing an atmospheric quantity at one site.
+The variables influence each other through a single equation, producing
+chaotic (weather-like) behavior when forcing F ≥ 8.
+
+It is used as a **toy atmosphere** — simple enough to run in seconds
+but realistic enough to test data assimilation methods.
+
+---
+
+## Governing Equation
+
+```
+dx(j)/dt = (x(j+1) - x(j-2)) * x(j-1) - x(j) + F
+
+where j = 1...40  (cyclic: x(41) = x(1))
+
+Terms:
+  (x(j+1) - x(j-2)) * x(j-1)  →  advection
+  - x(j)                        →  dissipation
+  + F                            →  external forcing
+```
+
+---
+
+## Key Parameters (input.nml)
+
+| Parameter | Default | Namelist | Description |
+|-----------|---------|----------|-------------|
+| `model_size` | 40 | `&model_nml` | Number of variables |
+| `forcing` | 8.0 | `&model_nml` | F ≥ 8 = chaotic behavior |
+| `delta_t` | 0.05 | `&model_nml` | Internal RK time step |
+| `time_step_seconds` | 3600 | `&model_nml` | 1 hour per DA cycle |
+| `ens_size` | 20 | `&filter_nml` | Ensemble members |
+| `cutoff` | 0.20 | `&assim_tools_nml` | Localization half-width |
+
+---
+
+## Observation Setup
+
+Used pre-built observation file: `obs_seq_identity_1_20.in`
+
+| Property | Value |
+|----------|-------|
+| Observed variables | x(1) to x(20) — first 20 of 40 |
+| Unobserved variables | x(21) to x(40) — second 20 of 40 |
+| Observation error variance | 1.0 for all observations |
+| Observations per cycle | 20 |
+| Total cycles | 1000 |
+| Total observations | 20,000 |
+
+---
+
+## Workflow
+
+### Step 1 — Compile
+
+```bash
+module load intel/21
+module load openmpi/4.1.6
+cd /gpfs/home/ea25e/space/DART/models/lorenz_96/work/
+./quickbuild.sh
+```
+
+**Note:** Intel/21 compiler required. GNU compiler causes
+`'-assume buffered_io'` error. OpenMPI/4.1.6 must be loaded after Intel.
+
+### Step 2 — Set Up Observations
+
+```bash
+cp obs_seq_identity_1_20.in obs_seq.in
+```
+
+Observes x(1)–x(20) with observation error variance = 1.0.
+
+### Step 3 — Generate Truth and Observations
+
+```bash
+./perfect_model_obs
+```
+
+**Produces:**
+- `true_state.nc` — true atmosphere (shape: 1000 × 1 × 40)
+- `obs_seq.out` — synthetic observations with noise
+
+### Step 4 — Run Data Assimilation
+
+```bash
+./filter
+```
+
+**Produces:**
+- `preassim.nc` — prior ensemble (shape: 1000 × 20 × 40)
+- `analysis.nc` — posterior ensemble (shape: 1000 × 20 × 40)
+- `obs_seq.final` — observations with DA diagnostics
+
+### Step 5 — Save Results
+
+```bash
+mkdir /gpfs/home/ea25e/Trials/L_96/exp1_no_inflation
+cp preassim.nc analysis.nc obs_seq.final true_state.nc \
+   /gpfs/home/ea25e/Trials/L_96/exp1_no_inflation/
+```
+
+---
+
+## Experiments
+
+### Experiment 1 — Baseline (No Inflation)
+
+**Settings:** `inf_flavor=0` | `cutoff=0.20` | `ens_size=20`
+
+| Variable Group | Prior RMSE | Post RMSE | Improvement |
+|----------------|------------|-----------|-------------|
+| All 40 variables | 1.819 | 1.795 | 1.3% |
+| Observed x(1)–x(20) | 0.404 | 0.325 | **19.6%** |
+| Unobserved x(21)–x(40) | 2.532 | 2.511 | 0.8% |
+
+**Spread/RMSE ratio:** 0.653 — underdispersive ✗
+
+---
+
+### Experiment 2 — With Inflation
+
+**Settings:** `inf_flavor=2` | `inf_initial=1.0` | `cutoff=0.20`
+
+Change in `input.nml`:
+```fortran
+inf_flavor = 2,    0,    ! was 0, 0
+inf_initial = 1.0, 1.0,
+```
+
+| Variable Group | Prior RMSE | Post RMSE | Improvement |
+|----------------|------------|-----------|-------------|
+| All 40 variables | 1.840 | 1.816 | 1.3% |
+| Observed x(1)–x(20) | 0.397 | 0.317 | **20.1%** |
+| Unobserved x(21)–x(40) | 2.564 | 2.544 | 0.8% |
+
+**Spread/RMSE ratio:** 0.750 — improved but still underdispersive ✗
+
+**Key finding:** Inflation increased spread (1.187 → 1.379) as expected.
+Slight increase in overall RMSE is normal — members pushed further from truth.
+
+---
+
+### Experiment 3 — Inflation + Wider Localization
+
+**Settings:** `inf_flavor=2` | `inf_initial=1.0` | `cutoff=0.30`
+
+Change in `input.nml`:
+```fortran
+cutoff = 0.30    ! was 0.20
+```
+
+| Variable Group | Prior RMSE | Post RMSE | Improvement |
+|----------------|------------|-----------|-------------|
+| All 40 variables | 1.799 | 1.777 | 1.2% |
+| Observed x(1)–x(20) | 0.394 | 0.313 | **20.6% ✓ Best** |
+| Unobserved x(21)–x(40) | 2.507 | 2.488 | 0.8% |
+
+**Key finding:** Wider localization (cutoff=0.30 ≈ 12 variables either side)
+allowed observations to reach further into the unobserved region.
+
+---
+
+## Key Findings
+
+1. **Observed variables (x1–x20)** showed 19–21% RMSE improvement
+   across all experiments — direct observation correction works well
+
+2. **Unobserved variables (x21–x40)** showed only 0.8% improvement
+   in all cases — the root cause is lack of observations, not settings
+
+3. **Inflation** improved Spread/RMSE ratio from 0.653 → 0.750
+   — moving toward the target of 1.0
+
+4. **Wider localization** (cutoff=0.30) gave best observed RMSE (0.313)
+
+5. **The dominant problem** is observation coverage — the recommended
+   next step is observing all 40 variables using `obs_seq_identity_1_40_2.in`
+
+---
+
+## Output File Reference
+
+| File | Shape | Contents |
+|------|-------|----------|
+| `true_state.nc` | (1000, 1, 40) | Truth trajectory |
+| `preassim.nc` | (1000, 20, 40) | Prior ensemble + mean + sd |
+| `analysis.nc` | (1000, 20, 40) | Posterior ensemble + mean + sd |
+| `obs_seq.out` | — | Synthetic observations |
+| `obs_seq.final` | — | Obs + model predictions |
+
+---
+
+## Visualization
+
+Python scripts were developed in Jupyter on FSU RCC to visualize results.
+Key plots produced:
+
+- **Time series** — truth vs prior vs posterior for observed and unobserved variables
+- **RMSE over time** — prior and posterior RMSE across 1000 cycles
+- **Spread vs RMSE** — ensemble calibration diagnostic
+- **Split RMSE** — separate panels for all 40, observed, and unobserved variables
+- **Snapshot** — state space at final cycle with longitude axis (0°–360°)
+
+---
+
+## Next Steps
+
+- [ ] Observe all 40 variables: `cp obs_seq_identity_1_40_2.in obs_seq.in`
+- [ ] Test stronger inflation: `inf_initial = 1.05`
+- [ ] Ensemble size sensitivity: `ens_size = 10, 20, 40, 80`
+- [ ] Compare with Lorenz 63 results
+
+# B-grid Solo Model
+
+**Model directory:** `DART/models/bgrid_solo/work/`  
+**Date:** May 2026  
+
+---
+
+## What is B-grid Solo?
+
+The B-grid Solo model is a **simplified 3D atmospheric model** based on
+GFDL's B-grid dynamical core. It is the next step up in complexity from
+Lorenz 96 — bridging the gap between toy models and full weather models.
+
+| Feature | Lorenz 96 | B-grid Solo |
+|---------|-----------|-------------|
+| Dimensions | 1D circle | 3D atmosphere |
+| Variables | 40 (one type) | 28,200 (four types) |
+| Variable types | state only | Ps, T, u, v |
+| Obs types | RAW_STATE | Radiosonde |
+| Run time | Seconds | Minutes |
+
+---
+
+## Model Grid
+
+```
+Grid structure: 60 lon × 30 lat × 5 lev
+                ↑         ↑        ↑
+         longitude     latitude   vertical
+
+Total variables: ~60 × 30 × 5 × 4 = 36,000
+Actual model size: 28,200 (winds on VelJ=29 grid)
+```
+
+### Why VelJ = 29 (not 30)?
+
+The B-grid uses **Arakawa B-grid staggering** — temperature and pressure
+(T, Ps) sit at grid cell centers, while winds (u, v) sit at cell corners.
+Corners of a 30-point latitude grid give 29 interior boundaries.
+
+---
+
+## State Variables
+
+| Symbol | Name | Units | Dimensions | Notes |
+|--------|------|-------|------------|-------|
+| Ps | Surface Pressure | Pa | 2D (lat × lon) | Ground level only — no vertical dim |
+| T | Temperature | K | 3D (lev × lat × lon) | Different at each level |
+| u | Zonal Wind | m/s | 3D (lev × VelJ × lon) | East-west component |
+| v | Meridional Wind | m/s | 3D (lev × VelJ × lon) | North-south component |
+
+### Why is Ps 2D?
+
+Surface pressure is the **total weight of the atmosphere** pressing down
+on one point at the ground. It is measured at the surface only — there is
+no such thing as "surface pressure at level 3." Hence no vertical dimension.
+
+---
+
+## Held-Suarez Forcing
+
+The model uses **Held-Suarez forcing** — a standard benchmark for
+atmospheric model testing (Held & Suarez, 1994).
+
+- Maintains temperature gradient between tropics and poles
+- Relaxes atmosphere toward an equilibrium temperature profile
+- Creates realistic jet streams and weather-like patterns
+- No moisture, clouds, or ocean — simplified but physically meaningful
+
+Key parameters in `input.nml`:
+
+```fortran
+&hs_forcing_nml
+   delh   = 60.    ! temperature gradient pole-to-equator
+   t_zero = 315.   ! reference temperature (K)
+   ka     = -40.   ! atmospheric relaxation timescale
+/
+```
+
+---
+
+## Key Parameters (input.nml)
+
+| Parameter | Value | Namelist | Description |
+|-----------|-------|----------|-------------|
+| `nlon` | 60 | `&bgrid_cold_start_nml` | Longitude points |
+| `nlat` | 30 | `&bgrid_cold_start_nml` | Latitude points |
+| `nlev` | 5 | `&bgrid_cold_start_nml` | Vertical levels |
+| `dt_atmos` | 3600 | `&model_nml` | 1 hour time step |
+| `days` | 10 | `&model_nml` | Intended run length |
+| `ens_size` | 20 | `&filter_nml` | Ensemble members |
+| `inf_flavor` | 0 | `&filter_nml` | No inflation (baseline) |
+| `cutoff` | 0.20 | `&assim_tools_nml` | ~1145 km localization radius |
+| `perturb_from_single_instance` | .true. | `&filter_nml` | Create ensemble by perturbing |
+| `perturbation_amplitude` | 0.2 | `&filter_nml` | Ensemble perturbation size |
+
+---
+
+## Observations
+
+The pre-built `obs_seq.in` file (1.54 MB) contains a real
+**radiosonde observation network**.
+
+| Observation Type | Variable | Description |
+|-----------------|----------|-------------|
+| `RADIOSONDE_TEMPERATURE` | T | Temperature from balloon soundings (K) |
+| `RADIOSONDE_U_WIND_COMPONENT` | u | Zonal wind from balloons (m/s) |
+| `RADIOSONDE_V_WIND_COMPONENT` | v | Meridional wind from balloons (m/s) |
+| `RADIOSONDE_SURFACE_PRESSURE` | Ps | Surface pressure (Pa) |
+
+**Statistics:**
+
+- Total observations: 9,600
+- Assimilation cycles completed: 2
+- Observations per cycle: 4,800
+- QC threshold: 3.0
+
+**Key difference from Lorenz 96:** B-grid uses real radiosonde observation
+types at 3D locations (lat, lon, pressure level) vs synthetic identity
+observations at 1D locations in Lorenz 96.
+
+---
+
+## Workflow
+
+### Step 1 — Compile
+
+```bash
+module load intel/21
+module load openmpi/4.1.6
+cd /gpfs/home/ea25e/space/DART/models/bgrid_solo/work/
+./quickbuild.sh
+```
+
+Compiles 15 DART executables (more than Lorenz 96's 11).
+
+### Step 2 — Create NetCDF Input File
+
+```bash
+ncgen -o perfect_input.nc perfect_input.cdl
+```
+
+Converts the CDL text description to NetCDF binary format.
+`perfect_input.cdl` ships with DART and contains a valid B-grid
+atmospheric state to use as the starting point.
+
+### Step 3 — Generate Truth and Observations
+
+```bash
+./perfect_model_obs
+```
+
+**Output:**
+
+```
+Model size = 28,200
+Total obs in sequence = 9,600
+2 assimilation windows completed
+```
+
+**Produces:**
+- `true_state.nc` — truth (shape: 2 × 1 × 30 × 60 for Ps)
+- `obs_seq.out` — synthetic observations with noise
+
+### Step 4 — Create Ensemble Starting Point ⚠️ B-grid specific
+
+```bash
+cp perfect_input.nc filter_input.nc
+```
+
+**This step is unique to B-grid — not needed in Lorenz 96.**
+
+The filter needs `filter_input.nc` to create its initial ensemble.
+Because `perturb_from_single_instance = .true.`, it reads this single
+state and creates 20 members by adding random noise (amplitude = 0.2).
+
+### Step 5 — Run Data Assimilation
+
+```bash
+./filter
+```
+
+Only 2 cycles completed — `obs_seq.in` contained observations for
+2 assimilation windows only. The `days = 10` setting in the namelist
+was overridden by the available observations.
+
+**Produces:**
+- `preassim.nc` — prior ensemble (shape: 2 × 20 × 30 × 60 for Ps)
+- `analysis.nc` — posterior ensemble
+- `obs_seq.final` — observations with DA diagnostics
+- `filter_output.nc` — final ensemble state
+
+---
+
+## Why Only 2 Cycles?
+
+The 2 cycles and 5 levels are **completely independent**:
+
+- **2 cycles** = how many times the forecast → observe → correct loop ran in **time**
+- **5 levels** = vertical structure of the model at **each moment in time**
+
+Every cycle, all 5 levels were assimilated simultaneously. The 2 just
+means it happened twice. To run more cycles, a new `obs_seq.in` file
+with more observation times is needed.
+
+---
+
+## Experiment 1 — Default Run Results
+
+**Settings:** `inf_flavor=0` | `cutoff=0.20` | `ens_size=20` | 2 cycles
+
+| Variable | Max Error | Units | Assessment |
+|----------|-----------|-------|------------|
+| Surface Pressure (Ps) | 1.298 | Pa | ~0.001% of total — excellent |
+| Temperature (T) Level 3 | 0.007 | K | 7 thousandths of a degree — excellent |
+| U Wind Level 3 | 0.003 | m/s | ~0.01% of typical winds — excellent |
+| V Wind Level 3 | 0.003 | m/s | ~0.01% of typical winds — excellent |
+
+> **Note:** Errors appear very small because only 2 cycles ran.
+> The ensemble started close to truth (copied from `perfect_input.nc`)
+> and had minimal time to diverge. Running 100+ cycles would produce
+> more realistic error statistics.
+
+### Error Map Interpretation
+
+- **Red patches** = posterior overestimates truth
+- **Blue patches** = posterior underestimates truth
+- **White** = near zero error (ideal)
+- **Scattered pattern** = random residual errors, no systematic geographic bias
+- **Vertical striping in U wind** = B-grid grid structure signature
+
+---
+
+## Output File Reference
+
+| File | Variable shapes | Contents |
+|------|----------------|----------|
+| `true_state.nc` | ps:(2,1,30,60) t:(2,1,5,30,60) | Truth trajectory |
+| `preassim.nc` | ps:(2,20,30,60) t:(2,20,5,30,60) | Prior ensemble + mean + sd |
+| `analysis.nc` | ps:(2,20,30,60) t:(2,20,5,30,60) | Posterior ensemble + mean + sd |
+| `filter_output.nc` | ps:(1,20,30,60) | Final ensemble state |
+| `perfect_output.nc` | ps:(1,1,30,60) | Final truth state |
+
+---
+
+## Key Findings
+
+1. **B-grid successfully compiled** on FSU RCC with Intel/21 + OpenMPI/4.1.6
+2. **Extra step required:** `cp perfect_input.nc filter_input.nc` — unique to B-grid
+3. **Only 2 cycles ran** — limited by observations in `obs_seq.in`
+4. **All 5 vertical levels assimilated** in both cycles — levels and cycles are independent
+5. **Surface pressure is 2D** — exists only at ground level, no vertical dimension
+6. **Errors very small** at 2 cycles — ensemble had not diverged from truth yet
+7. **RMSE near zero at time step 0** — ensemble identical to truth at start (both from same file)
+
+---
+
+## Next Steps
+
+- [ ] Run more cycles — generate new `obs_seq.in` with longer time coverage
+- [ ] Experiment 2: Add inflation (`inf_flavor=2`, `inf_initial=1.0`)
+- [ ] Experiment 3: Observation impact — remove wind obs or surface pressure
+- [ ] Experiment 4: Localization sensitivity (`cutoff=0.10` vs `0.20` vs `0.40`)
+- [ ] Experiment 5: Ensemble size (`ens_size=10, 20, 40, 80`)
+
+---
+
+## References
+
+- Held, I. M., and M. J. Suarez, 1994: A proposal for the intercomparison
+  of the dynamical cores of atmospheric general circulation models.
+  *Bulletin of the American Meteorological Society*, 75(10), 1825–1830.
+
+- Anderson, J. L., and Coauthors, 2009: The Data Assimilation Research
+  Testbed: A community facility. *Bulletin of the American Meteorological
+  Society*, 90(9), 1283–1296.
