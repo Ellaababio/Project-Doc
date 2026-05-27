@@ -37,12 +37,13 @@ via the OnDemand web interface.
 ### Loading Required Modules
 
 ```bash
-module purge
+module load precompiled
 module load intel/21
 module load openmpi/4.1.6
+module load netcdf/4.7.0
+module load python/3
 which mpif90   # verify — should return a path
 ```
-
 Add to `~/.bashrc` to load automatically:
 
 ```bash
@@ -100,6 +101,229 @@ Controlled by `cutoff` in `&assim_tools_nml`.
 **Date:** May 2026  
 
 ---
+# Lorenz 63 Model
+
+**Study:** Sensitivity of Observation Error and Observation Frequency in Chaotic Models  
+**Model directory:** `DART/models/lorenz_63/work/`  
+**Date:** May 2026  
+
+---
+
+## Objective
+
+To investigate how **observation error variance (R)** and **observation frequency**
+affect data assimilation performance in a chaotic system using the Lorenz 63 model and DART.
+
+---
+
+## What is Lorenz 63?
+
+The Lorenz 63 model is a **3-variable nonlinear chaotic system** originally
+designed to model atmospheric convection. It is highly sensitive to initial
+conditions — small differences in starting state grow rapidly over time,
+making it an ideal testbed for data assimilation methods.
+
+### Governing Equations
+
+```
+dx/dt = σ(y - x)
+dy/dt = x(ρ - z) - y
+dz/dt = xy - βz
+
+Default parameters: σ=10, ρ=28, β=8/3
+```
+
+### Key difference from Lorenz 96
+
+| Feature | Lorenz 63 | Lorenz 96 |
+|---------|-----------|-----------|
+| Variables | 3 (x, y, z) | 40 (x1–x40) |
+| Dimensions | 0D — 3 equations | 1D — latitude circle |
+| Obs file | Created interactively | Pre-built file |
+| Purpose | Sensitivity studies | Inflation/localization |
+
+---
+
+## Data Assimilation Framework
+
+DART was used to:
+
+- Generate a synthetic nature run (truth)
+- Create observations with Gaussian noise
+- Run the Ensemble Kalman Filter (EnKF)
+- Compute RMSE and spread diagnostics
+
+---
+
+## Workflow
+
+### Step 1 — Compile
+
+```bash
+module load intel/21
+module load openmpi/4.1.6
+cd /gpfs/home/ea25e/space/DART/models/lorenz_63/work/
+./quickbuild.sh
+```
+
+### Step 2 — Create Observation Sequence
+
+```bash
+./create_obs_sequence
+```
+
+Interactive prompts answered:
+
+```
+Input upper bound on number of observations : 1000
+Input number of copies of data              : 0
+Input number of quality control values      : 0
+Input observation type                      : RAW_STATE_VARIABLE
+Input error variance                        : (varied per experiment)
+input a -1 if there are no more obs         : -1
+Input filename for sequence                 : set_def.out
+```
+
+### Step 3 — Create Fixed Network Sequence
+
+```bash
+./create_fixed_network_seq
+```
+
+```
+Input filename for network definition : (Enter — use set_def.out)
+Regular repeating sequence            : 1
+Number of observation times           : 1000
+Initial time (days, seconds)          : 0 0
+Period (days, seconds)                : 0 3600
+Output filename                       : obs_seq.in
+```
+
+### Step 4 — Generate Truth and Observations
+
+```bash
+./perfect_model_obs
+```
+
+Runs the true Lorenz 63 trajectory forward and samples synthetic
+observations with Gaussian noise. Produces `true_state.nc` and `obs_seq.out`.
+
+### Step 5 — Run Data Assimilation
+
+```bash
+./filter
+```
+
+Runs the ensemble Kalman filter. Produces `preassim.nc` and `analysis.nc`.
+
+---
+
+## Experiment 1 — Observation Error Variance
+
+### Purpose
+
+Determine how changing observation error variance **R** affects
+assimilation performance. Four values of R were tested.
+
+### Key Concept
+
+- **Large R** → DART trusts observations less → weaker corrections
+- **Small R** → DART trusts observations more → stronger corrections
+
+### Results
+
+| R | Prior RMSE | Posterior RMSE |
+|---|------------|----------------|
+| 8.0 | 0.1780 | 0.1730 | 2.8% |
+| 2.0 | 0.0981 | 0.0943 | 3.9% |
+| 0.5 | 0.0535 | 0.0504 | 5.8% |
+| 0.2 | 0.0339 | 0.0310 | **8.6% ✓ Best** |
+
+### Conclusion
+
+- Smaller observation error variance produced lower RMSE across all cases
+- Posterior RMSE was always smaller than prior RMSE — assimilation always helped
+- As R decreased from 8.0 to 0.2 the prior RMSE dropped by **81%**
+- The filter gave more weight to observations when R was small — pulling
+  the ensemble closer to truth
+
+---
+
+## Experiment 2 — Observation Frequency
+
+### Purpose
+
+Study how the number of observations affects forecast error growth
+and assimilation performance.
+
+### Setup
+
+Two observation network sizes were tested:
+
+| Setup | Observations | Description |
+|-------|-------------|-------------|
+| Sparse | 50 observations | Few measurements |
+| Dense | 200 observations | More frequent updates |
+
+### Key Findings
+
+- **Fewer observations** caused larger forecast errors — less information
+  to constrain the ensemble
+- **More frequent observations** reduced error growth — ensemble tracked
+  truth more closely
+- Frequent updates prevented the chaotic model from drifting too far
+  from the true state between corrections
+
+---
+
+## Evaluation Metrics
+
+### RMSE (Root Mean Square Error)
+
+Measures the difference between the ensemble mean and the true state.
+**Lower RMSE = better assimilation performance.**
+
+```
+RMSE = sqrt( mean( (ensemble_mean - truth)^2 ) )
+```
+
+Computed separately for:
+- **Prior RMSE** — before assimilating observations
+- **Posterior RMSE** — after assimilating observations
+
+### Ensemble Spread
+
+Measures the uncertainty in the ensemble forecast — how spread out
+the 20 members are around their mean. A well calibrated ensemble has:
+
+```
+Spread ≈ RMSE   (Spread/RMSE ratio close to 1.0)
+```
+
+---
+
+## Overall Conclusions
+
+| Finding | Detail |
+|---------|--------|
+| Observation error effect | Smaller R → better RMSE. R=0.2 gave 81% lower prior RMSE than R=8.0 |
+| Observation frequency effect | More observations → better error control and truth tracking |
+| Posterior always better | In all experiments posterior RMSE < prior RMSE — DA always helped |
+| Chaotic sensitivity | Lorenz 63's chaos makes observation quality critical — small R matters a lot |
+
+> **Key message:** In chaotic systems like Lorenz 63, the quality and
+> frequency of observations strongly controls how well data assimilation
+> can track the true state. This motivates careful observation network
+> design in real atmospheric DA systems.
+
+---
+
+## Next Steps
+
+- [ ] Test additional R values between 0.2 and 0.5
+- [ ] Compare with Lorenz 96 sensitivity results
+- [ ] Test impact of ensemble size on sensitivity to R
+- [ ] Apply findings to guide observation setup in B-grid experiments
 
 ## What is Lorenz 96?
 
@@ -171,7 +395,26 @@ cd /gpfs/home/ea25e/space/DART/models/lorenz_96/work/
 `'-assume buffered_io'` error. OpenMPI/4.1.6 must be loaded after Intel.
 
 ### Step 2 — Set Up Observations
+## Pre-built Observation Files
 
+Three observation sequence files are available in the work directory.
+Copy your preferred file to `obs_seq.in` before running `perfect_model_obs`:
+
+| File | Observed | Error Variance | Description |
+|------|----------|----------------|-------------|
+| `obs_seq_identity_1_20.in` | x(1)–x(20) | 1.0 | 20 of 40 variables — used in these experiments |
+| `obs_seq_identity_1_40_2.in` | x(1)–x(40) | 2.0 | All 40 variables — moderate noise |
+| `obs_seq_identity_1_40_4.in` | x(1)–x(40) | 4.0 | All 40 variables — higher noise |
+
+To switch observation files simply run:
+
+```bash
+cp obs_seq_identity_1_40_2.in obs_seq.in
+```
+
+Then rerun `perfect_model_obs` and `filter`.
+
+Example;
 ```bash
 cp obs_seq_identity_1_20.in obs_seq.in
 ```
@@ -221,7 +464,7 @@ cp preassim.nc analysis.nc obs_seq.final true_state.nc \
 | Observed x(1)–x(20) | 0.404 | 0.325 | **19.6%** |
 | Unobserved x(21)–x(40) | 2.532 | 2.511 | 0.8% |
 
-**Spread/RMSE ratio:** 0.653 — underdispersive ✗
+**Spread/RMSE ratio:** 0.653
 
 ---
 
@@ -235,11 +478,11 @@ inf_flavor = 2,    0,    ! was 0, 0
 inf_initial = 1.0, 1.0,
 ```
 
-| Variable Group | Prior RMSE | Post RMSE | Improvement |
-|----------------|------------|-----------|-------------|
-| All 40 variables | 1.840 | 1.816 | 1.3% |
-| Observed x(1)–x(20) | 0.397 | 0.317 | **20.1%** |
-| Unobserved x(21)–x(40) | 2.564 | 2.544 | 0.8% |
+| Variable Group | Prior RMSE | Post RMSE | 
+|----------------|------------|-----------|
+| All 40 variables | 1.840 | 1.816 |
+| Observed x(1)–x(20) | 0.397 | 0.317 |
+| Unobserved x(21)–x(40) | 2.564 | 2.544 |
 
 **Spread/RMSE ratio:** 0.750 — improved but still underdispersive ✗
 
@@ -257,11 +500,11 @@ Change in `input.nml`:
 cutoff = 0.30    ! was 0.20
 ```
 
-| Variable Group | Prior RMSE | Post RMSE | Improvement |
-|----------------|------------|-----------|-------------|
-| All 40 variables | 1.799 | 1.777 | 1.2% |
-| Observed x(1)–x(20) | 0.394 | 0.313 | **20.6% ✓ Best** |
-| Unobserved x(21)–x(40) | 2.507 | 2.488 | 0.8% |
+| Variable Group | Prior RMSE | Post RMSE | 
+|----------------|------------|-----------|
+| All 40 variables | 1.799 | 1.777 |
+| Observed x(1)–x(20) | 0.394 | 0.313 | 
+| Unobserved x(21)–x(40) | 2.507 | 2.488 |
 
 **Key finding:** Wider localization (cutoff=0.30 ≈ 12 variables either side)
 allowed observations to reach further into the unobserved region.
