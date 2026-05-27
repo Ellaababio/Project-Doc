@@ -1,5 +1,5 @@
 site_name: DART Experiment Documentation
-site_description: Lab notebook for Lorenz 96 and B-grid DART experiments at FSU
+site_description: Lab notebook for Lorenz 63, Lorenz 96 and B-grid DART experiments at FSU
 site_author: ea25e — Florida State University
 
 docs_dir: docs
@@ -7,6 +7,7 @@ site_dir: site
 
 nav:
   - Home: index.md
+  - Lorenz 63: lorenz63.md
   - Lorenz 96: lorenz96.md
   - B-grid Solo: bgrid.md
 
